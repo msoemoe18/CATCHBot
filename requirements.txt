@@ -1,0 +1,8 @@
+opencv-python
+numpy
+scipy
+matplotlib
+pandas
+filterpy
+pyserial
+jupyter
