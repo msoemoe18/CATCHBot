@@ -8,17 +8,25 @@ import numpy as np
 from simulation_receiver import SimulationReceiver
 
 
-WIDTH, HEIGHT = 1200, 760
-ROOM_TOP = 92
+# Window and layout settings
+WINDOW_WIDTH = 1200
+WINDOW_HEIGHT = 760
+HEADER_BOTTOM = 190
 FLOOR_Y = 620
+
+# Trash-can settings
 CAN_WIDTH = 112
 CAN_HEIGHT = 105
-CAN_SPEED = 430
+CAN_SPEED = 430.0
+
+# Simulated camera error
 DETECTION_NOISE = 2.5
 
 
 @dataclass
 class Throw:
+    """Stores the physics values for one thrown object."""
+
     x0: float
     y0: float
     vx: float
@@ -27,12 +35,17 @@ class Throw:
     size: int = 17
 
     def position(self, elapsed):
+        """Calculate the object's current x/y position."""
+
         x = self.x0 + self.vx * elapsed
         y = self.y0 + self.vy * elapsed
         y += 0.5 * self.gravity * elapsed**2
+
         return x, y
 
     def landing_time(self, target_y):
+        """Calculate when the object reaches the catch line."""
+
         a = 0.5 * self.gravity
         b = self.vy
         c = self.y0 - target_y
@@ -57,6 +70,8 @@ class Throw:
 
 
 class CatchBotSimulation:
+    """Controls the throw, computer vision, prediction, and interface."""
+
     def __init__(self):
         self.random = random.Random()
 
@@ -67,17 +82,28 @@ class CatchBotSimulation:
         self.receiver = SimulationReceiver()
         self.receiver.start()
 
+        # Current trash-can position.
         self.can_x = 700.0
+
+        # Current throw.
         self.throw = None
+
+        # Time tracking for animation.
         self.throw_started = time.perf_counter()
         self.last_frame = time.perf_counter()
 
-        # time, center_x, center_y, width, height
+        # Stores:
+        # time, center_x, center_y, box_width, box_height
         self.detections = []
 
+        # Predicted and actual landing locations.
         self.predicted_x = None
         self.actual_x = None
+
+        # Current simulation result.
         self.status = "READY"
+
+        # Number of simulated camera detections.
         self.frames_seen = 0
 
         # Choose simulation mode
@@ -87,19 +113,24 @@ class CatchBotSimulation:
             self.new_throw()
 
     def new_throw(self):
-        # Randomly throw the trash from the left or right side.
-        if self.random.choice(["left", "right"]) == "left":
-            start_x = self.random.uniform(190, 355)
+        """Automatically generate a throw from the left or right."""
+
+        # Randomly choose a starting side.
+        if self.random.choice(("left", "right")) == "left":
+            start_x = self.random.uniform(220, 350)
             horizontal_velocity = self.random.uniform(230, 410)
         else:
-            start_x = self.random.uniform(845, 1010)
+            start_x = self.random.uniform(850, 980)
             horizontal_velocity = -self.random.uniform(230, 410)
 
         self.throw = Throw(
             x0=start_x,
-            y0=self.random.uniform(280, 390),
+            y0=self.random.uniform(330, 390),
             vx=horizontal_velocity,
-            vy=self.random.uniform(-920, -730),
+
+            # These values keep the throw below the blue header.
+            vy=self.random.uniform(-500, -390),
+
             gravity=self.random.uniform(980, 1160),
         )
 
@@ -109,6 +140,7 @@ class CatchBotSimulation:
         self.status = "THROWING"
         self.frames_seen = 0
 
+        # Calculate the actual landing location for comparison.
         landing_time = self.throw.landing_time(FLOOR_Y - 14)
 
         if landing_time is not None:
@@ -120,20 +152,40 @@ class CatchBotSimulation:
             self.actual_x = None
 
     def reset(self):
+        """Reset the trash can and start another throw."""
+
         self.can_x = 700.0
         self.new_throw()
 
     def computer_vision_detection(self, true_x, true_y):
-        # Simulated camera detection with small measurement noise.
+        """
+        Simulate computer vision detecting the trash.
+
+        In the real project, this function could be replaced by:
+        - HSV color detection
+        - YOLO object detection
+        - another OpenCV detector
+        """
+
+        # Add a small amount of noise to imitate a real camera.
         center_x = true_x + self.random.gauss(0, DETECTION_NOISE)
         center_y = true_y + self.random.gauss(0, DETECTION_NOISE)
 
+        # Simulated bounding-box size.
         box_width = self.throw.size * 2 + self.random.randint(-2, 3)
         box_height = self.throw.size * 2 + self.random.randint(-2, 3)
 
         return center_x, center_y, box_width, box_height
 
     def estimate_landing(self):
+        """
+        Estimate the landing point from detected center coordinates.
+
+        Horizontal movement uses a line.
+        Vertical movement uses a parabola.
+        """
+
+        # Do not estimate until enough frames are available.
         if len(self.detections) < 7:
             return
 
@@ -143,23 +195,35 @@ class CatchBotSimulation:
             [item[0] for item in recent],
             dtype=float
         )
+
         times -= times[0]
 
-        xs = np.array(
+        center_x_values = np.array(
             [item[1] for item in recent],
             dtype=float
         )
 
-        ys = np.array(
+        center_y_values = np.array(
             [item[2] for item in recent],
             dtype=float
         )
 
-        x_fit = np.polyfit(times, xs, 1)
-        y_fit = np.polyfit(times, ys, 2)
+        # Estimate horizontal movement.
+        x_fit = np.polyfit(
+            times,
+            center_x_values,
+            1
+        )
 
         x0 = x_fit[1]
         velocity_x = x_fit[0]
+
+        # Estimate vertical movement.
+        y_fit = np.polyfit(
+            times,
+            center_y_values,
+            2
+        )
 
         y0 = y_fit[2]
         velocity_y = y_fit[1]
@@ -168,6 +232,7 @@ class CatchBotSimulation:
         if gravity <= 0:
             return
 
+        # Calculate when the object reaches the floor.
         target_y = FLOOR_Y - 14
 
         a = 0.5 * gravity
@@ -198,17 +263,21 @@ class CatchBotSimulation:
             )
 
     def move_trash_can(self, target_x, dt):
+        """Move the virtual trash can toward the prediction."""
+
         if target_x is None:
             return
 
+        # Keep the trash can inside the window.
         minimum_x = CAN_WIDTH / 2
-        maximum_x = WIDTH - CAN_WIDTH / 2
+        maximum_x = WINDOW_WIDTH - CAN_WIDTH / 2
 
         target_x = max(
             minimum_x,
             min(maximum_x, target_x)
         )
 
+        # Move gradually instead of teleporting.
         movement = CAN_SPEED * dt
         difference = target_x - self.can_x
 
@@ -255,6 +324,8 @@ class CatchBotSimulation:
 
 
     def update(self, now):
+        """Update physics, detection, prediction, and can movement."""
+
         dt = min(
             now - self.last_frame,
             0.05
@@ -278,22 +349,14 @@ class CatchBotSimulation:
 
             return
 
-        if self.status in ["CAUGHT", "MISSED"]:
-            #keep your existing code here
-            external_x = self.receiver.latest_target
-
-            if (
-                external_x is not None
-                and time.monotonic() - self.receiver.last_received <= 0.5
-            ):
-                target_x = float(external_x) * WIDTH / 700
-                self.move_trash_can(target_x, dt)
-
+        # Simulation Mode
+        if self.status in ("CAUGHT", "MISSED"):
             return
 
         elapsed = now - self.throw_started
         true_x, true_y = self.throw.position(elapsed)
 
+        # Continue tracking until the trash reaches the catch line.
         if true_y < FLOOR_Y - 4:
             detection = self.computer_vision_detection(
                 true_x,
@@ -336,6 +399,7 @@ class CatchBotSimulation:
 
             self.move_trash_can(target_x, dt)
 
+        # Evaluate whether the trash can caught the object.
         else:
             catch_distance = CAN_WIDTH * 0.58
 
@@ -345,20 +409,22 @@ class CatchBotSimulation:
                 self.status = "MISSED"
 
     def draw_room(self, frame):
-        # White wall area
+        """Draw a simple uncluttered room."""
+
+        # Plain wall below the header.
         cv2.rectangle(
             frame,
-            (0, ROOM_TOP),
-            (WIDTH, 475),
+            (0, HEADER_BOTTOM),
+            (WINDOW_WIDTH, 475),
             (211, 222, 226),
             -1
         )
 
-        # Baseboard
+        # Baseboard.
         cv2.line(
             frame,
             (0, 475),
-            (WIDTH, 475),
+            (WINDOW_WIDTH, 475),
             (125, 137, 140),
             5
         )
@@ -366,58 +432,59 @@ class CatchBotSimulation:
         cv2.line(
             frame,
             (0, 505),
-            (WIDTH, 505),
+            (WINDOW_WIDTH, 505),
             (185, 164, 143),
             12
         )
 
-        # Floor
+        # Floor.
         cv2.rectangle(
             frame,
             (0, 510),
-            (WIDTH, HEIGHT),
+            (WINDOW_WIDTH, WINDOW_HEIGHT),
             (163, 128, 96),
             -1
         )
 
-        for x in range(-200, WIDTH + 300, 75):
+        # Floor perspective lines.
+        for x in range(-200, WINDOW_WIDTH + 300, 75):
             cv2.line(
                 frame,
                 (x, 510),
-                (x + 300, HEIGHT),
+                (x + 300, WINDOW_HEIGHT),
                 (184, 148, 112),
                 2
             )
 
-        # Window
+        # Window.
         cv2.rectangle(
             frame,
-            (70, 145),
-            (300, 315),
+            (70, 235),
+            (300, 405),
             (82, 105, 120),
             -1
         )
 
         cv2.rectangle(
             frame,
-            (82, 157),
-            (288, 303),
+            (82, 247),
+            (288, 393),
             (150, 206, 225),
             -1
         )
 
         cv2.line(
             frame,
-            (185, 157),
-            (185, 303),
+            (185, 247),
+            (185, 393),
             (235, 240, 240),
             5
         )
 
         cv2.line(
             frame,
-            (82, 230),
-            (288, 230),
+            (82, 320),
+            (288, 320),
             (235, 240, 240),
             5
         )
@@ -425,80 +492,14 @@ class CatchBotSimulation:
         cv2.putText(
             frame,
             "ROOM CAMERA VIEW",
-            (78, 340),
+            (78, 430),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
             (70, 80, 84),
             1
         )
 
-        # Wall picture
-        cv2.rectangle(
-            frame,
-            (450, 145),
-            (635, 275),
-            (88, 62, 45),
-            -1
-        )
-
-        cv2.rectangle(
-            frame,
-            (465, 160),
-            (620, 260),
-            (227, 193, 131),
-            -1
-        )
-
-        cv2.line(
-            frame,
-            (480, 240),
-            (535, 190),
-            (80, 130, 90),
-            8
-        )
-
-        cv2.line(
-            frame,
-            (535, 190),
-            (600, 235),
-            (80, 130, 90),
-            8
-        )
-
-        # Sofa
-        cv2.rectangle(
-            frame,
-            (845, 350),
-            (1125, 505),
-            (73, 95, 110),
-            -1
-        )
-
-        cv2.rectangle(
-            frame,
-            (870, 315),
-            (1100, 400),
-            (82, 107, 122),
-            -1
-        )
-
-        cv2.rectangle(
-            frame,
-            (865, 480),
-            (900, 540),
-            (55, 55, 55),
-            -1
-        )
-
-        cv2.rectangle(
-            frame,
-            (1070, 480),
-            (1105, 540),
-            (55, 55, 55),
-            -1
-        )
-
-        # Rug
+        # Open rug/catch zone.
         cv2.ellipse(
             frame,
             (600, 585),
@@ -522,13 +523,16 @@ class CatchBotSimulation:
         )
 
     def draw_tripod_camera(self, frame):
-        camera_x = 1010
-        camera_y = 160
+        """Draw the fixed camera on a tripod."""
 
+        camera_x = 825
+        camera_y = 285
+
+        # Tripod legs.
         cv2.line(
             frame,
             (camera_x, camera_y + 40),
-            (camera_x - 120, 470),
+            (camera_x - 120, 500),
             (48, 48, 48),
             5
         )
@@ -536,7 +540,7 @@ class CatchBotSimulation:
         cv2.line(
             frame,
             (camera_x, camera_y + 40),
-            (camera_x + 100, 470),
+            (camera_x + 100, 500),
             (48, 48, 48),
             5
         )
@@ -544,11 +548,12 @@ class CatchBotSimulation:
         cv2.line(
             frame,
             (camera_x, camera_y + 40),
-            (camera_x, 470),
+            (camera_x, 500),
             (48, 48, 48),
             5
         )
 
+        # Camera body.
         cv2.rectangle(
             frame,
             (camera_x - 52, camera_y - 28),
@@ -557,6 +562,7 @@ class CatchBotSimulation:
             -1
         )
 
+        # Camera lens.
         cv2.circle(
             frame,
             (camera_x - 12, camera_y + 3),
@@ -575,8 +581,8 @@ class CatchBotSimulation:
 
         cv2.putText(
             frame,
-            "FIXED COMPUTER-VISION CAMERA",
-            (785, 115),
+            "FIXED TRIPOD CAMERA",
+            (705, 255),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
             (45, 55, 60),
@@ -584,6 +590,8 @@ class CatchBotSimulation:
         )
 
     def draw_trash_can(self, frame):
+        """Draw the mobile trash can."""
+
         left = int(
             self.can_x - CAN_WIDTH / 2
         )
@@ -594,7 +602,7 @@ class CatchBotSimulation:
 
         top = FLOOR_Y - CAN_HEIGHT
 
-        # Lid
+        # Lid.
         cv2.ellipse(
             frame,
             (int(self.can_x), top),
@@ -606,7 +614,7 @@ class CatchBotSimulation:
             -1
         )
 
-        # Body
+        # Body.
         cv2.rectangle(
             frame,
             (left, top),
@@ -615,7 +623,7 @@ class CatchBotSimulation:
             -1
         )
 
-        # Bottom
+        # Bottom rim.
         cv2.ellipse(
             frame,
             (int(self.can_x), FLOOR_Y),
@@ -627,7 +635,7 @@ class CatchBotSimulation:
             -1
         )
 
-        # Handle
+        # Lid handle.
         cv2.rectangle(
             frame,
             (left - 8, top - 8),
@@ -646,6 +654,7 @@ class CatchBotSimulation:
             2
         )
 
+        # Green light means the object was caught.
         if self.status == "CAUGHT":
             cv2.circle(
                 frame,
@@ -656,20 +665,22 @@ class CatchBotSimulation:
             )
 
     def draw_detection_overlay(self, frame):
+        """Draw the bounding box, center point, and trajectory trace."""
+
         if not self.detections:
             return
 
-        # Keep trajectory below the title bar.
+        # Prevent the trajectory from appearing over the blue header.
         room_detections = [
             row
             for row in self.detections
-            if ROOM_TOP <= row[2] <= FLOOR_Y
+            if HEADER_BOTTOM <= row[2] <= FLOOR_Y
         ]
 
         if not room_detections:
             return
 
-        # Purple trajectory trace
+        # Purple line represents the detected path.
         trace = np.array(
             [
                 (int(row[1]), int(row[2]))
@@ -687,7 +698,7 @@ class CatchBotSimulation:
                 3
             )
 
-        # Current bounding box
+        # Get the newest bounding box.
         _, center_x, center_y, box_width, box_height = (
             room_detections[-1]
         )
@@ -697,7 +708,7 @@ class CatchBotSimulation:
         x2 = int(center_x + box_width / 2)
         y2 = int(center_y + box_height / 2)
 
-        # Green computer-vision bounding box
+        # Green box represents the computer-vision detection.
         cv2.rectangle(
             frame,
             (x1, y1),
@@ -706,7 +717,7 @@ class CatchBotSimulation:
             3
         )
 
-        # Detected center point
+        # Yellow dot represents the detected center.
         cv2.circle(
             frame,
             (int(center_x), int(center_y)),
@@ -773,41 +784,201 @@ class CatchBotSimulation:
 
 
     def render(self):
-        frame = np.full(
-            (HEIGHT, WIDTH, 3),
-            (235, 242, 245),
+        """Create the complete graphical interface."""
+
+        # Blue gradient workspace.
+        frame = np.zeros(
+            (WINDOW_HEIGHT, WINDOW_WIDTH, 3),
             dtype=np.uint8
         )
 
-        # Title bar
+        for y in range(WINDOW_HEIGHT):
+            color = int(235 - 35 * y / WINDOW_HEIGHT)
+            frame[y, :] = (color, 244, 250)
+
+        # Blue CATCHBot header.
         cv2.rectangle(
             frame,
             (0, 0),
-            (WIDTH, ROOM_TOP),
-            (23, 47, 70),
+            (WINDOW_WIDTH, HEADER_BOTTOM),
+            (180, 90, 30),
             -1
         )
 
         cv2.putText(
             frame,
-            "CATCHBot COMPUTER-VISION ROOM SIMULATION",
+            "CATCHBot",
             (25, 38),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.82,
+            0.92,
             (255, 255, 255),
             2
         )
 
         cv2.putText(
             frame,
-            "Fixed tripod camera | Bounding-box tracking | Trajectory prediction",
-            (26, 70),
+            "COMPUTER-VISION THROW SIMULATION",
+            (190, 37),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.52,
-            (205, 228, 239),
+            0.55,
+            (225, 248, 255),
             1
         )
 
+        cv2.putText(
+            frame,
+            "Fixed camera  |  Detect  |  Track  |  Predict  |  Catch",
+            (27, 69),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (220, 246, 255),
+            1
+        )
+
+        # Current values used by the top cards.
+        predicted = (
+            "--"
+            if self.predicted_x is None
+            else f"{self.predicted_x:.0f}px"
+        )
+
+        actual = (
+            "--"
+            if self.actual_x is None
+            else f"{self.actual_x:.0f}px"
+        )
+
+        status_color = (
+            (70, 220, 105)
+            if self.status == "CAUGHT"
+            else (255, 255, 255)
+        )
+
+        # Live Tracking blue card.
+        cv2.rectangle(
+            frame,
+            (20, 83),
+            (510, 174),
+            (42, 93, 125),
+            -1
+        )
+
+        cv2.rectangle(
+            frame,
+            (20, 83),
+            (510, 174),
+            (190, 235, 250),
+            2
+        )
+
+        cv2.putText(
+            frame,
+            "LIVE TRACKING",
+            (38, 108),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.52,
+            (255, 255, 255),
+            2
+        )
+
+        cv2.putText(
+            frame,
+            f"STATUS: {self.status}",
+            (38, 134),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            status_color,
+            2
+        )
+
+        cv2.putText(
+            frame,
+            f"Frames: {self.frames_seen}",
+            (190, 134),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (235, 250, 255),
+            1
+        )
+
+        cv2.putText(
+            frame,
+            f"Predicted X: {predicted}",
+            (300, 134),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (235, 250, 255),
+            1
+        )
+
+        cv2.putText(
+            frame,
+            f"Actual X: {actual}   Can X: {self.can_x:.0f}px",
+            (38, 158),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.43,
+            (220, 242, 250),
+            1
+        )
+
+        # Simulation Controls blue card.
+        cv2.rectangle(
+            frame,
+            (530, 83),
+            (1180, 174),
+            (42, 93, 125),
+            -1
+        )
+
+        cv2.rectangle(
+            frame,
+            (530, 83),
+            (1180, 174),
+            (190, 235, 250),
+            2
+        )
+
+        cv2.putText(
+            frame,
+            "SIMULATION CONTROLS",
+            (550, 108),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.52,
+            (255, 255, 255),
+            2
+        )
+
+        cv2.putText(
+            frame,
+            "Random throw source:",
+            (550, 136),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.44,
+            (225, 245, 252),
+            1
+        )
+
+        cv2.putText(
+            frame,
+            "LEFT / RIGHT",
+            (705, 136),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (255, 255, 255),
+            2
+        )
+
+        cv2.putText(
+            frame,
+            "SPACE = new throw    R = reset    Q/ESC = quit",
+            (550, 160),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.44,
+            (225, 245, 252),
+            1
+        )
+
+        # Draw the room below the header.
         self.draw_room(frame)
 
         true_x, true_y = 0, 0
@@ -816,8 +987,12 @@ class CatchBotSimulation:
             elapsed = time.perf_counter() - self.throw_started
             true_x, true_y = self.throw.position(elapsed)
 
-        # Red thrown trash
-        if self.mode == "SIMULATION" and self.status == "THROWING":
+        # Red thrown object
+        if (
+            self.mode == "SIMULATION"
+            and self.status == "THROWING"
+            and HEADER_BOTTOM + self.throw.size <= true_y <= FLOOR_Y
+        ):
             cv2.circle(
                 frame,
                 (int(true_x), int(true_y)),
@@ -839,7 +1014,7 @@ class CatchBotSimulation:
         else:
             self.draw_live_tracking(frame)
 
-        # Predicted landing line
+        # Orange predicted landing line.
         if (
             self.mode == "SIMULATION"
             and self.predicted_x is not None
@@ -863,6 +1038,7 @@ class CatchBotSimulation:
                 1
             )
 
+        # Draw the trash can and fixed tripod camera.
         self.draw_trash_can(frame)
         self.draw_tripod_camera(frame)
 
@@ -923,7 +1099,7 @@ class CatchBotSimulation:
             cv2.putText(
                 frame,
                 "TRASH CAUGHT!",
-                (455, 365),
+                (475, 390),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 1.15,
                 (30, 190, 70),
@@ -934,28 +1110,70 @@ class CatchBotSimulation:
             cv2.putText(
                 frame,
                 "THROW MISSED",
-                (490, 365),
+                (490, 390),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 1.0,
                 (30, 50, 210),
                 3
             )
 
+        # Bottom legend and keyboard controls.
+        cv2.rectangle(
+            frame,
+            (0, WINDOW_HEIGHT - 47),
+            (WINDOW_WIDTH, WINDOW_HEIGHT),
+            (23, 47, 70),
+            -1
+        )
+
         cv2.putText(
             frame,
-            "SPACE: new throw   R: reset   Q/ESC: quit",
-            (WIDTH - 390, HEIGHT - 22),
+            "GREEN BOX = DETECTION",
+            (25, WINDOW_HEIGHT - 19),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.52,
-            (50, 60, 65),
+            0.46,
+            (115, 255, 125),
+            1
+        )
+
+        cv2.putText(
+            frame,
+            "PURPLE = TRACK",
+            (260, WINDOW_HEIGHT - 19),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.46,
+            (255, 130, 225),
+            1
+        )
+
+        cv2.putText(
+            frame,
+            "ORANGE = PREDICTION",
+            (430, WINDOW_HEIGHT - 19),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.46,
+            (80, 180, 255),
+            1
+        )
+
+        cv2.putText(
+            frame,
+            "SPACE: New throw   R: Reset   Q/ESC: Quit",
+            (780, WINDOW_HEIGHT - 19),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.46,
+            (220, 240, 248),
             1
         )
 
         return frame
 
     def run(self):
+        """Start the OpenCV window and keyboard controls."""
+
         while True:
             now = time.perf_counter()
+
             self.update(now)
 
             cv2.imshow(
