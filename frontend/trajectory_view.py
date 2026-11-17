@@ -6,40 +6,26 @@ def draw_trajectory(
     frame,
     positions,
     bbox=None,
-    predicted_landing=None
+    predicted_landing=None,
+    predicted_path=None
 ):
-    """
-    Draw object tracking information on a frame.
-
-    positions: list of (x, y) coordinates
-    bbox: (x, y, width, height)
-    predicted_landing: (x, y)
-    """
-
-    # Draw green circles at tracked positions
+    # Green observed tracking points
     for x, y in positions:
         cv2.circle(
-            frame,
-            (int(x), int(y)),
-            5,
-            (0, 255, 0),
-            -1
+            frame, (int(x), int(y)),
+            4, (0, 255, 0), -1
         )
 
-    # Connect positions with green lines
+    # Green observed tracking line
     for i in range(1, len(positions)):
-        start = tuple(map(int, positions[i - 1]))
-        end = tuple(map(int, positions[i]))
-
         cv2.line(
             frame,
-            start,
-            end,
-            (0, 255, 0),
-            2
+            tuple(map(int, positions[i - 1])),
+            tuple(map(int, positions[i])),
+            (0, 255, 0), 2
         )
 
-    # Draw bounding box around current object
+    # Green bounding box
     if bbox is not None:
         x, y, w, h = map(int, bbox)
 
@@ -47,21 +33,41 @@ def draw_trajectory(
             frame,
             (x, y),
             (x + w, y + h),
-            (0, 255, 0),
-            2
+            (0, 255, 0), 2
         )
 
         cv2.putText(
             frame,
-            "Tracked Object [Demo]",
-            (x, max(20, y - 10)),
+            "Tracked Object",
+            (max(5, x), max(20, y - 10)),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 255, 0),
-            2
+            0.55, (0, 255, 0), 2
         )
 
-    # Draw predicted landing marker
+    # Red predicted future path
+    if predicted_path is not None:
+        points = [
+            (int(x), int(y))
+            for x, y in predicted_path
+        ]
+
+        for i in range(1, len(points)):
+            cv2.line(
+                frame,
+                points[i - 1],
+                points[i],
+                (0, 0, 255), 2
+            )
+
+        cv2.putText(
+            frame,
+            "Predicted Path [Experimental]",
+            (10, 25),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55, (0, 0, 255), 2
+        )
+
+    # Red predicted landing marker
     if predicted_landing is not None:
         px, py = map(int, predicted_landing)
 
@@ -70,18 +76,7 @@ def draw_trajectory(
             (px, py),
             (0, 0, 255),
             cv2.MARKER_TILTED_CROSS,
-            20,
-            3
-        )
-
-        cv2.putText(
-            frame,
-            "Predicted Landing [Demo]",
-            (max(0, px - 90), max(20, py - 15)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 0, 255),
-            2
+            20, 3
         )
 
     return frame
