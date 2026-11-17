@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import cv2
 import numpy as np
+from simulation_receiver import SimulationReceiver
 
 
 WIDTH, HEIGHT = 1200, 760
@@ -59,6 +60,13 @@ class CatchBotSimulation:
     def __init__(self):
         self.random = random.Random()
 
+        # Store live camera tracking history
+        self.live_positions = []
+
+        # Receive external landing predictions
+        self.receiver = SimulationReceiver()
+        self.receiver.start()
+
         self.can_x = 700.0
         self.throw = None
         self.throw_started = time.perf_counter()
@@ -72,7 +80,11 @@ class CatchBotSimulation:
         self.status = "READY"
         self.frames_seen = 0
 
-        self.new_throw()
+        # Choose simulation mode
+        self.mode = "LIVE"
+
+        if self.mode == "SIMULATION":
+            self.new_throw()
 
     def new_throw(self):
         # Randomly throw the trash from the left or right side.
@@ -205,6 +217,43 @@ class CatchBotSimulation:
             min(movement, difference)
         )
 
+
+    def update_live_tracking(self):
+        position = self.receiver.latest_position
+
+        if position is None:
+            return
+
+        # Ignore old camera coordinates
+        if time.monotonic() - self.receiver.last_track_received > 1.5:
+            self.live_positions.clear()
+            return
+
+        # Convert camera coordinates to simulation coordinates
+        x = position[0] * WIDTH / 700
+        y = ROOM_TOP + position[1] * (FLOOR_Y - ROOM_TOP) / 350
+
+        point = (int(x), int(y))
+
+        # Start a new trail if the object jumps too far
+        if self.live_positions:
+            old_x, old_y = self.live_positions[-1]
+
+            distance = math.hypot(
+                point[0] - old_x,
+                point[1] - old_y
+            )
+
+            if distance > 120:
+                self.live_positions.clear()
+
+        if not self.live_positions or self.live_positions[-1] != point:
+            self.live_positions.append(point)
+
+        # Keep the last 30 tracking points
+        self.live_positions = self.live_positions[-30:]
+
+
     def update(self, now):
         dt = min(
             now - self.last_frame,
@@ -213,7 +262,33 @@ class CatchBotSimulation:
 
         self.last_frame = now
 
+        #update live camera tracking
+        self.update_live_tracking()
+
+        # Live Camera Mode
+        if self.mode == "LIVE":
+            external_x = self.receiver.latest_target
+
+            if (
+                external_x is not None
+                and time.monotonic() - self.receiver.last_received <= 0.5
+            ):
+                target_x = float(external_x) * WIDTH / 700
+                self.move_trash_can(target_x, dt)
+
+            return
+
         if self.status in ["CAUGHT", "MISSED"]:
+            #keep your existing code here
+            external_x = self.receiver.latest_target
+
+            if (
+                external_x is not None
+                and time.monotonic() - self.receiver.last_received <= 0.5
+            ):
+                target_x = float(external_x) * WIDTH / 700
+                self.move_trash_can(target_x, dt)
+
             return
 
         elapsed = now - self.throw_started
@@ -238,11 +313,28 @@ class CatchBotSimulation:
             )
 
             self.frames_seen += 1
+
             self.estimate_landing()
-            self.move_trash_can(
-                self.predicted_x,
-                dt
-            )
+
+            # Use frontend prediction when available
+            external_x = self.receiver.latest_target
+
+            if external_x is not None:
+                print(f"Simulation received X: {external_x}")
+
+            # Ignore predictions older than 0.5 seconds
+            if time.monotonic() - self.receiver.last_received > 0.5:
+                external_x = None
+
+            if external_x is not None:
+                # Convert dashboard coordinates (700px)
+                # to simulation coordinates (1200px)
+                target_x = float(external_x) * WIDTH / 700
+            else:
+                # Keep Maria's original prediction
+                target_x = self.predicted_x
+
+            self.move_trash_can(target_x, dt)
 
         else:
             catch_distance = CAN_WIDTH * 0.58
@@ -643,6 +735,43 @@ class CatchBotSimulation:
             1
         )
 
+    
+    def draw_live_tracking(self, frame):
+        # Only display recent live camera tracking
+        if (
+            not self.live_positions
+            or time.monotonic() - self.receiver.last_track_received > 1.5
+        ):
+            return
+
+        # Draw purple tracking trajectory
+        points = np.array(self.live_positions, dtype=np.int32)
+
+        if len(points) > 1:
+            cv2.polylines(
+                frame, [points], False,
+                (255, 80, 210), 3
+            )
+
+        # Draw green square around current object position
+        x, y = self.live_positions[-1]
+
+        cv2.rectangle(
+            frame,
+            (x - 20, y - 20),
+            (x + 20, y + 20),
+            (40, 230, 70), 3
+        )
+
+        cv2.putText(
+            frame,
+            "LIVE CAMERA OBJECT",
+            (max(5, x - 80), max(ROOM_TOP + 20, y - 30)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5, (40, 230, 70), 2
+        )
+
+
     def render(self):
         frame = np.full(
             (HEIGHT, WIDTH, 3),
@@ -681,11 +810,14 @@ class CatchBotSimulation:
 
         self.draw_room(frame)
 
-        elapsed = time.perf_counter() - self.throw_started
-        true_x, true_y = self.throw.position(elapsed)
+        true_x, true_y = 0, 0
+
+        if self.mode == "SIMULATION":
+            elapsed = time.perf_counter() - self.throw_started
+            true_x, true_y = self.throw.position(elapsed)
 
         # Red thrown trash
-        if self.status == "THROWING":
+        if self.mode == "SIMULATION" and self.status == "THROWING":
             cv2.circle(
                 frame,
                 (int(true_x), int(true_y)),
@@ -702,11 +834,15 @@ class CatchBotSimulation:
                 2
             )
 
-        self.draw_detection_overlay(frame)
+        if self.mode == "SIMULATION":
+            self.draw_detection_overlay(frame)
+        else:
+            self.draw_live_tracking(frame)
 
         # Predicted landing line
         if (
-            self.predicted_x is not None
+            self.mode == "SIMULATION"
+            and self.predicted_x is not None
             and self.status == "THROWING"
         ):
             cv2.line(
@@ -744,7 +880,7 @@ class CatchBotSimulation:
 
         status_color = (
             (40, 185, 70)
-            if self.status == "CAUGHT"
+            if self.mode == "SIMULATION" and self.status == "CAUGHT"
             else (45, 55, 60)
         )
 
@@ -783,7 +919,7 @@ class CatchBotSimulation:
                 2 if index == 0 else 1
             )
 
-        if self.status == "CAUGHT":
+        if self.mode == "SIMULATION" and self.status == "CAUGHT":
             cv2.putText(
                 frame,
                 "TRASH CAUGHT!",
@@ -794,7 +930,7 @@ class CatchBotSimulation:
                 3
             )
 
-        elif self.status == "MISSED":
+        elif self.mode == "SIMULATION" and self.status == "MISSED":
             cv2.putText(
                 frame,
                 "THROW MISSED",
@@ -838,6 +974,7 @@ class CatchBotSimulation:
             elif key == ord(" "):
                 self.new_throw()
 
+        self.receiver.stop()
         cv2.destroyAllWindows()
 
 

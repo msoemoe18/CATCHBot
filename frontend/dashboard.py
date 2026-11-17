@@ -5,6 +5,8 @@ import sys
 import time
 import math
 import numpy as np
+import socket
+import json
 
 from pathlib import Path
 from queue import Empty
@@ -64,6 +66,14 @@ TEST_GRAVITY_PX = 500.0
 # UDP communication
 udp_listener = UDPListener()
 latest_landing = None
+
+# Send landing predictions to Maria's simulation
+simulation_socket = socket.socket(
+    socket.AF_INET,
+    socket.SOCK_DGRAM
+)
+
+SIMULATION_ADDRESS = ("127.0.0.1", 5006)
 
 # -----------------------------------
 # Dashboard Header
@@ -192,8 +202,11 @@ def update_camera():
         )
         return
 
-    # Resize first to keep coordinates consistent
+    # Resize camera frame
     frame = cv2.resize(frame, (700, 350))
+
+    # Flip camera horizontally (mirror view)
+    frame = cv2.flip(frame, 1)
 
     current_time = time.perf_counter()
 
@@ -229,6 +242,19 @@ def update_camera():
 
     if detection is not None:
         x, y, radius = detection
+
+        # Send live object coordinates to Maria's simulation
+        track_message = {
+            "type": "track",
+            "x": float(x),
+            "y": float(y)
+        }
+
+        simulation_socket.sendto(
+            json.dumps(track_message).encode("utf-8"),
+            SIMULATION_ADDRESS
+        )
+
         last_radius = radius
 
         if kalman_filter is None:
@@ -339,6 +365,18 @@ def update_camera():
                             prediction_label.config(
                                 text=f"Experimental Landing: ({int(x_land)}, {CATCH_HEIGHT_Y})"
                             )
+
+                            # Send predicted landing X to Maria's simulation
+                            message = {
+                                "type": "landing",
+                                "x_land": float(x_land)
+                            }
+
+                            simulation_socket.sendto(
+                                json.dumps(message).encode("utf-8"),
+                                SIMULATION_ADDRESS
+                            )
+                            print(f"Sent landing X to simulation: {x_land:.1f}")
 
     else:
         status_label.config(
@@ -495,6 +533,7 @@ def on_close():
         udp_job = None
 
     udp_listener.stop()
+    simulation_socket.close()
     root.destroy()
 
 
