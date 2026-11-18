@@ -66,6 +66,10 @@ TEST_GRAVITY_PX = 500.0
 # UDP communication
 udp_listener = UDPListener()
 latest_landing = None
+last_landing_time = 0.0
+LANDING_DISPLAY_SECONDS = 0.5
+last_coordinates_time = 0.0
+COORDINATES_DISPLAY_SECONDS = 0.5
 
 # Send landing predictions to Maria's simulation
 simulation_socket = socket.socket(
@@ -188,6 +192,8 @@ def update_camera():
     global camera_job
     global kalman_filter, last_frame_time, last_radius
     global smooth_position, last_tracked_position
+    global last_landing_time
+    global last_coordinates_time
 
     if not camera_running or camera is None:
         return
@@ -230,9 +236,9 @@ def update_camera():
     predicted_landing = None
     bbox = None
 
-    prediction_label.config(
-        text="Predicted Landing Position: N/A"
-    )
+    #prediction_label.config(
+    #    text="Predicted Landing Position: N/A"
+    #)
 
     # Use the experimental gravity setting defined above
     calibrated_radius = TEST_GRAVITY_PX * 0.02 / 9.81
@@ -302,6 +308,8 @@ def update_camera():
             radius * 2
         )
 
+        last_coordinates_time = time.monotonic()
+
         coordinates_label.config(
             text=f"Object Coordinates: ({x}, {y})"
         )
@@ -362,6 +370,8 @@ def update_camera():
                                 + 0.5 * TEST_GRAVITY_PX * times**2
                             ]).tolist()
 
+                            last_landing_time = time.monotonic()
+
                             prediction_label.config(
                                 text=f"Experimental Landing: ({int(x_land)}, {CATCH_HEIGHT_Y})"
                             )
@@ -384,15 +394,33 @@ def update_camera():
             fg="#FACC15"
         )
 
-        coordinates_label.config(
-            text="Object Coordinates: N/A"
-        )
+        #coordinates_label.config(
+        #    text="Object Coordinates: N/A"
+        #)
+
+        if (
+            time.monotonic() - last_coordinates_time
+            > COORDINATES_DISPLAY_SECONDS
+        ):
+            coordinates_label.config(
+                text="Object Coordinates: N/A"
+            )
 
         if tracker.missing > tracker.max_missing:
             smooth_trail.clear()
             smooth_position = None
             last_tracked_position = None
             kalman_filter = None
+
+    # Clear the displayed prediction after 2 seconds without an update
+        if (
+            last_landing_time > 0
+            and time.monotonic() - last_landing_time > LANDING_DISPLAY_SECONDS
+        ):
+            prediction_label.config(
+                text="Predicted Landing Position: N/A"
+            )
+            last_landing_time = 0.0
 
     # Draw green trail and experimental red path
     frame = draw_trajectory(
@@ -480,8 +508,12 @@ def stop_camera():
     global kalman_filter, last_frame_time
     global smooth_position, last_tracked_position
     global latest_landing
+    global last_landing_time
+    global last_coordinates_time
 
     latest_landing = None
+    last_landing_time = 0.0
+    last_coordinates_time = 0.0
 
     camera_running = False
 

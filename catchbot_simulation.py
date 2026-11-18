@@ -77,6 +77,7 @@ class CatchBotSimulation:
 
         # Store live camera tracking history
         self.live_positions = []
+        self.last_processed_track = 0.0
 
         # Receive external landing predictions
         self.receiver = SimulationReceiver()
@@ -286,41 +287,44 @@ class CatchBotSimulation:
             min(movement, difference)
         )
 
-
+    
     def update_live_tracking(self):
         position = self.receiver.latest_position
+        received_at = self.receiver.last_track_received
+        now = time.monotonic()
 
-        if position is None:
-            return
-
-        # Ignore old camera coordinates
-        if time.monotonic() - self.receiver.last_track_received > 1.5:
+        # Clear tracking after a longer detection gap
+        if position is None or now - received_at > 1.5:
             self.live_positions.clear()
             return
 
+        # Only process newly received coordinates
+        if received_at <= self.last_processed_track:
+            return
+
+        # Start a new trail after a detection gap
+        if (
+            self.last_processed_track > 0
+            and received_at - self.last_processed_track > 0.6
+        ):
+            self.live_positions.clear()
+
+        self.last_processed_track = received_at
+
         # Convert camera coordinates to simulation coordinates
-        x = position[0] * WIDTH / 700
-        y = ROOM_TOP + position[1] * (FLOOR_Y - ROOM_TOP) / 350
+        x = position[0] * WINDOW_WIDTH / 700
+        y = HEADER_BOTTOM + position[1] * (
+            FLOOR_Y - HEADER_BOTTOM
+        ) / 350
 
         point = (int(x), int(y))
 
-        # Start a new trail if the object jumps too far
-        if self.live_positions:
-            old_x, old_y = self.live_positions[-1]
-
-            distance = math.hypot(
-                point[0] - old_x,
-                point[1] - old_y
-            )
-
-            if distance > 120:
-                self.live_positions.clear()
-
+        # Record actual received positions
         if not self.live_positions or self.live_positions[-1] != point:
             self.live_positions.append(point)
 
-        # Keep the last 30 tracking points
-        self.live_positions = self.live_positions[-30:]
+        # Keep more trajectory history
+        self.live_positions = self.live_positions[-150:]
 
 
     def update(self, now):
@@ -344,7 +348,7 @@ class CatchBotSimulation:
                 external_x is not None
                 and time.monotonic() - self.receiver.last_received <= 0.5
             ):
-                target_x = float(external_x) * WIDTH / 700
+                target_x = float(external_x) * WINDOW_WIDTH / 700
                 self.move_trash_can(target_x, dt)
 
             return
@@ -392,7 +396,7 @@ class CatchBotSimulation:
             if external_x is not None:
                 # Convert dashboard coordinates (700px)
                 # to simulation coordinates (1200px)
-                target_x = float(external_x) * WIDTH / 700
+                target_x = float(external_x) * WINDOW_WIDTH/ 700
             else:
                 # Keep Maria's original prediction
                 target_x = self.predicted_x
@@ -777,7 +781,7 @@ class CatchBotSimulation:
         cv2.putText(
             frame,
             "LIVE CAMERA OBJECT",
-            (max(5, x - 80), max(ROOM_TOP + 20, y - 30)),
+            (max(5, x - 80), max(HEADER_BOTTOM + 20, y - 30)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5, (40, 230, 70), 2
         )
@@ -1060,40 +1064,6 @@ class CatchBotSimulation:
             else (45, 55, 60)
         )
 
-        panel = [
-            f"STATUS: {self.status}",
-            f"CV FRAMES TRACKED: {self.frames_seen}",
-            f"PREDICTED LANDING: {predicted}",
-            f"ACTUAL LANDING: {actual}",
-            f"TRASH CAN X: {self.can_x:.0f}px",
-        ]
-
-        cv2.rectangle(
-            frame,
-            (18, 112),
-            (350, 275),
-            (241, 247, 248),
-            -1
-        )
-
-        cv2.rectangle(
-            frame,
-            (18, 112),
-            (350, 275),
-            (100, 120, 125),
-            2
-        )
-
-        for index, text in enumerate(panel):
-            cv2.putText(
-                frame,
-                text,
-                (33, 143 + index * 25),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.51,
-                status_color if index == 0 else (45, 55, 60),
-                2 if index == 0 else 1
-            )
 
         if self.mode == "SIMULATION" and self.status == "CAUGHT":
             cv2.putText(
