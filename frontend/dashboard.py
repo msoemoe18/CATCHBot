@@ -31,7 +31,9 @@ from trajectory import landing_from_state
 root = tk.Tk()
 root.tk.call("tk", "scaling", 1.0)
 root.title("CATCHBot - AI Trash Can")
-root.geometry("1000x750")
+# Dashboard window: left side
+root.geometry("565x760+0+35")
+root.minsize(500, 650)
 root.configure(bg="#142235")
 
 camera = None
@@ -108,8 +110,8 @@ subtitle.pack(pady=(0, 15))
 camera_frame = tk.Frame(
     root,
     bg="#26384C",
-    width=700,
-    height=350
+    width=545,
+    height=270
 )
 camera_frame.pack(pady=15)
 camera_frame.pack_propagate(False)
@@ -121,7 +123,7 @@ camera_label = tk.Label(
     fg="white",
     bg="#26384C"
 )
-camera_label.pack(expand=True)
+camera_label.pack(expand=True, fill="both")
 
 # -----------------------------------
 # Status Labels
@@ -438,6 +440,10 @@ def update_camera():
     )
 
     image = Image.fromarray(frame)
+
+    # Resize camera preview without changing detection coordinates
+    image.thumbnail((535, 300), Image.Resampling.LANCZOS)
+
     photo = ImageTk.PhotoImage(image=image)
 
     camera_label.config(image=photo, text="")
